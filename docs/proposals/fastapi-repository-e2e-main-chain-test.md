@@ -20,6 +20,7 @@
 - 最小 API：创建 Project、提交输入、回复确认、查询当前状态、查询 TaskLog
 - 实现 Repository 接口与开发/测试存储实现（具体数据库 provider 遵循团队最终决定）
 - 注入 Workflow Engine、RuleBasedAgent、Mock Adapter 与 Task Runner
+- 注入只暴露稳定任务状态和结果的 AlgorithmService Stub，验证后端到算法黑盒的契约
 - 提供从上传 STL / GLB 到 `picked_up` 的全 mock 主链
 - 让全链路传播同一 `traceId`
 - 建立 API、状态机、安全门禁和端到端测试入口
@@ -60,6 +61,11 @@
 - 领域对象的持久化接口
 - 开发/测试阶段使用内存或轻量存储实现
 
+### AlgorithmJob
+
+- 后端提交文本或图片输入后持久化 `algorithmJobId`、输入引用、结果产物引用和 `traceId`。
+- Stub 只返回稳定的 queued/running/succeeded/failed 状态与结果 Asset，不暴露 ComfyUI 节点、工作流或内部参数。
+
 ## 原型 / 演示
 
 不适用。
@@ -94,10 +100,16 @@
 
 - 现状：无。
 - 提议后的行为：直接调用 API 尝试从非相邻状态跳转（如跳过检查直接打印），请求被拒绝。
-- 验收：API 返回 4xx 错误，TaskLog 不产生新记录或记录被拒绝的原因。
+- 验收：API 返回 4xx 错误，业务状态保持不变；TaskLog 写入一条拒绝事件，包含调用方、原状态、目标状态、拒绝原因和同一 `traceId`。
 
 ### 例子 6：README 说明
 
 - 现状：无。
 - 提议后的行为：README 说明 mock 服务的启动方式、可测试的范围和已知边界。
 - 验收：按 README 步骤可启动服务并运行端到端测试。
+
+### 例子 7：算法服务 Stub 边界
+
+- 现状：只从已有 STL/GLB 开始测试，无法证明后端能把生成任务交给算法服务并接回结果。
+- 提议后的行为：后端将文本或图片输入提交给 AlgorithmService Stub，保存 `algorithmJobId`，并把成功结果映射为模型 Asset 后继续主链。
+- 验收：端到端测试验证提交、状态查询和结果消费均传播同一 `traceId`；Stub 返回的产物引用被持久化并进入后续检查；API、日志和领域对象中不出现 ComfyUI 地址、节点名、工作流 JSON 或内部参数。
