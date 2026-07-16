@@ -1,13 +1,35 @@
-# Image Provider v1 提案
+# Image Provider API v1
 
-## Overview
+## 接口含义
 
-Image Provider 是 Text-to-Image API 与外部生图服务之间的内部适配层，首期接入：
+Image Provider API 是业务服务与外部生图服务之间的内部适配接口。它把不同供应商的请求参数、返回格式和错误统一起来，让上层无需直接依赖供应商 SDK。首期接入：
 
 - OpenAI GPT Image
 - Google Nano Banana
 
 上层只使用统一的 `ImageProvider` 接口，不直接依赖供应商 SDK、模型参数、会话 ID 或返回格式。
+
+该 API 可以：
+
+- 根据文字描述生成一张图片
+- 根据一张或多张参考图编辑并生成一张新图片
+- 自动选择或按请求指定 OpenAI、Google Provider
+- 返回统一的图片、模型、用量、耗时和错误信息
+
+该 API 是服务端内部接口，不直接向终端用户开放，也不负责异步任务状态、多视图生成顺序、3D Loop、业务数据持久化或产物存储。
+
+## 接口一览
+
+| 功能 | 请求方法 | 路径 | 含义 |
+| --- | --- | --- | --- |
+| 文生图 | `POST` | `/api/v1/image-provider/generate` | 根据文字描述生成一张图片 |
+| 参考图编辑 | `POST` | `/api/v1/image-provider/edit` | 根据文字和参考图生成一张编辑后的图片 |
+
+所有路径均以部署环境的服务地址为基准。`POST` 请求和所有响应使用 `application/json`；JSON 中的图片数据使用 Base64 字符串传输，进入 Provider 实现后解码为二进制。图片数据不得写入普通日志。
+
+---
+
+## 调用关系
 
 ```text
 Text-to-Image API
@@ -84,13 +106,33 @@ V1 中一次 Provider 调用只返回一张图片。需要前、左、后三张�
 
 ---
 
-## 统一请求
+## 文生图
 
-### ImageGenerateRequest
+根据文字描述生成一张新图片，不接收参考图。
+
+- 请求方法：`POST`
+- 请求路径：`/api/v1/image-provider/generate`
+- 请求体：`ImageGenerateRequest`
+- 成功响应：`200 OK`，返回 `ImageProviderResult`
+
+### 请求参数
+
+| 参数 | 类型 | 必填 | 默认值 | 含义 |
+| --- | --- | --- | --- | --- |
+| `request_id` | string | 是 | - | 调用方生成的唯一请求 ID，用于日志追踪和串联响应 |
+| `provider` | string | 否 | `auto` | `auto` / `openai` / `google`；`auto` 由路由器选择 Provider |
+| `prompt` | string | 是 | - | 本次实际执行的图片描述 |
+| `quality` | string | 否 | `balanced` | `draft` / `balanced` / `final` |
+| `resolution` | string | 否 | `1k` | `1k` / `2k` / `4k` |
+| `aspect_ratio` | string | 否 | `1:1` | 图片宽高比，取值必须在目标 Provider 的能力声明中 |
+| `output_format` | string | 否 | `png` | `png` / `jpeg` / `webp` |
+
+### 请求示例
 
 ```json
 {
   "request_id": "req_a1b2c3d4",
+  "provider": "auto",
   "prompt": "一台复古桌面收音机，正视图，完整展示主体",
   "quality": "balanced",
   "resolution": "1k",
@@ -99,17 +141,50 @@ V1 中一次 Provider 调用只返回一张图片。需要前、左、后三张�
 }
 ```
 
-### ImageEditRequest
+---
+
+## 参考图编辑
+
+根据文字指令和一张或多张参考图生成一张新图片，可用于改变观察角度、局部编辑或保持主体一致性。
+
+- 请求方法：`POST`
+- 请求路径：`/api/v1/image-provider/edit`
+- 请求体：`ImageEditRequest`
+- 成功响应：`200 OK`，返回 `ImageProviderResult`
+
+### 请求参数
+
+| 参数 | 类型 | 必填 | 默认值 | 含义 |
+| --- | --- | --- | --- | --- |
+| `request_id` | string | 是 | - | 调用方生成的唯一请求 ID，用于日志追踪和串联响应 |
+| `provider` | string | 否 | `auto` | `auto` / `openai` / `google`；`auto` 由路由器选择 Provider |
+| `prompt` | string | 是 | - | 对参考图执行的编辑指令 |
+| `reference_images` | image[] | 是 | - | 一张或多张参考图片；数量必须符合目标 Provider 的能力声明 |
+| `quality` | string | 否 | `balanced` | `draft` / `balanced` / `final` |
+| `resolution` | string | 否 | `1k` | `1k` / `2k` / `4k` |
+| `aspect_ratio` | string | 否 | `1:1` | 图片宽高比，取值必须在目标 Provider 的能力声明中 |
+| `output_format` | string | 否 | `png` | `png` / `jpeg` / `webp` |
+
+`reference_images` 元素：
+
+| 参数 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `asset_id` | string | 是 | 上层资产 ID，用于结果追踪；Provider 不通过该 ID 读取资产 |
+| `mime_type` | string | 是 | 图片 MIME 类型，例如 `image/png` |
+| `data` | string | 是 | 图片内容的 Base64 字符串，不包含 Data URL 前缀 |
+
+### 请求示例
 
 ```json
 {
   "request_id": "req_e5f6g7h8",
+  "provider": "auto",
   "prompt": "生成同一台收音机的左视图，只改变观察方向",
   "reference_images": [
     {
       "asset_id": "asset_front",
       "mime_type": "image/png",
-      "data": "<binary>"
+      "data": "<base64>"
     }
   ],
   "quality": "balanced",
@@ -119,23 +194,13 @@ V1 中一次 Provider 调用只返回一张图片。需要前、左、后三张�
 }
 ```
 
-公共字段：
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `request_id` | string | ✅ | 内部请求 ID，用于日志追踪 |
-| `prompt` | string | ✅ | 本次实际执行的 prompt |
-| `quality` | string | ❌ | `draft` / `balanced` / `final` |
-| `resolution` | string | ❌ | `1k` / `2k` / `4k` |
-| `aspect_ratio` | string | ❌ | 默认 `1:1` |
-| `output_format` | string | ❌ | `png` / `jpeg` / `webp` |
-| `reference_images` | image[] | edit 必填 | 一张或多张参考图片 |
-
 V1 不在统一协议中提供任意 Provider 参数透传，也不提供跨 Provider 的 `seed` 保证。
 
 ---
 
-## 统一结果
+## 生图与编辑响应
+
+文生图和参考图编辑成功时均返回 `200 OK` 和以下统一结果：
 
 ```json
 {
@@ -144,7 +209,7 @@ V1 不在统一协议中提供任意 Provider 参数透传，也不提供跨 Pro
   "request_id": "req_a1b2c3d4",
   "provider_request_id": "provider_req_123",
   "image": {
-    "data": "<binary>",
+    "data": "<base64>",
     "mime_type": "image/png",
     "width": 1024,
     "height": 1024
@@ -158,9 +223,26 @@ V1 不在统一协议中提供任意 Provider 参数透传，也不提供跨 Pro
 }
 ```
 
+### 响应字段
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `provider` | string | 实际执行请求的 Provider |
+| `model` | string | 实际执行请求的模型 |
+| `request_id` | string | 原样返回调用方传入的请求 ID |
+| `provider_request_id` | string \| null | 供应商请求 ID，用于问题排查 |
+| `image.data` | string | 图片内容的 Base64 字符串 |
+| `image.mime_type` | string | 图片 MIME 类型 |
+| `image.width` | integer | 图片宽度，单位为像素 |
+| `image.height` | integer | 图片高度，单位为像素 |
+| `usage.input_tokens` | integer \| null | 供应商返回的输入 token 数 |
+| `usage.output_tokens` | integer \| null | 供应商返回的输出 token 数 |
+| `provider_session_ref` | string \| null | 供应商会话引用，仅用于辅助追踪 |
+| `latency_ms` | integer | 本次 Provider 调用耗时，单位为毫秒 |
+
 规则：
 
-- Provider 返回图片二进制，Asset Store 由上层负责
+- HTTP 响应使用 Base64；Provider 内部结果使用图片二进制，Asset Store 由上层负责
 - 图片 Base64 和二进制不得写入普通日志
 - `provider_request_id` 用于供应商问题排查
 - `provider_session_ref` 是可选字段，不作为业务恢复的唯一状态
@@ -336,19 +418,33 @@ class ImageProviderError(Exception):
 
 错误码：
 
-| Code | Retryable | Description |
-| --- | --- | --- |
-| `provider_timeout` | ✅ | Provider 调用超时 |
-| `provider_rate_limited` | ✅ | 触发限流 |
-| `provider_unavailable` | ✅ | Provider 服务异常 |
-| `provider_quota_exhausted` | ✅ | 配额不可用，可尝试备用 Provider |
-| `provider_configuration_error` | ❌ | API Key、模型或服务配置错误 |
-| `invalid_provider_request` | ❌ | 请求参数或图片不合法 |
-| `unsupported_capability` | ❌ | Provider 不支持请求能力 |
-| `safety_blocked` | ❌ | 内容安全拒绝 |
-| `invalid_provider_response` | 视情况 | 返回结果缺失或图片无法解码 |
+| Code | HTTP 状态 | Retryable | Description |
+| --- | --- | --- | --- |
+| `provider_timeout` | `504` | ✅ | Provider 调用超时 |
+| `provider_rate_limited` | `429` | ✅ | 触发限流 |
+| `provider_unavailable` | `503` | ✅ | Provider 服务异常 |
+| `provider_quota_exhausted` | `503` | ✅ | 配额不可用，可尝试备用 Provider |
+| `provider_configuration_error` | `503` | ❌ | API Key、模型或服务配置错误 |
+| `invalid_provider_request` | `400` | ❌ | 请求参数或图片不合法 |
+| `unsupported_capability` | `422` | ❌ | Provider 不支持请求能力 |
+| `safety_blocked` | `422` | ❌ | 内容安全拒绝 |
+| `invalid_provider_response` | `502` | 视情况 | 返回结果缺失或图片无法解码 |
 
-上层接口只依赖统一错误码，供应商原始错误放入受控日志。
+所有接口使用相同的错误响应结构：
+
+```json
+{
+  "error": {
+    "code": "invalid_provider_request",
+    "message": "reference_images is required",
+    "provider": "google",
+    "retryable": false,
+    "provider_request_id": null
+  }
+}
+```
+
+`message` 只能包含可安全返回的摘要。上层接口只依赖统一错误码，供应商原始错误放入受控日志。
 
 ---
 
@@ -373,24 +469,6 @@ GOOGLE_IMAGE_MODEL=gemini-3.1-flash-image
 - API Key 不进入请求、响应、数据库和日志
 - 模型 ID、超时、重试和默认路由必须配置化
 - 健康检查不得通过生成付费图片实现
-
----
-
-## 建议目录结构
-
-```text
-backend/app/modules/generation/
-├── providers/
-│   ├── base.py
-│   ├── openai.py
-│   ├── google.py
-│   ├── registry.py
-│   ├── router.py
-│   ├── schemas.py
-│   └── errors.py
-├── multi_view_generator.py
-└── image_task_service.py
-```
 
 ---
 
